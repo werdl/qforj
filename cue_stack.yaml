@@ -1,0 +1,23 @@
+cues:
+- number: 1.0
+  name: First Cue
+  continue_mode: AutoContinue
+  cue_type: !Audio
+    path: a.mp3
+    play: 2
+- number: 2.0
+  name: Second Cue
+  trim: -20.0
+  continue_mode: DoNotContinue
+  cue_type: !Audio
+    path: b.mp3
+    start_time: 1m 15s
+    end_time: 1m 25s
+    loops: true
+- number: 3.0
+  name: Stop Cue
+  continue_mode: DoNotContinue
+  cue_type: !Stop
+    target_cue: 1.0
+name: Main Stack
+continue_mode: DoNotContinue

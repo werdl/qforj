@@ -1,0 +1,14 @@
+[package]
+name = "qforj"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+cpal = "0.16.0"
+humantime-serde = "1.1.1"
+kira = "0.11.0"
+rodio = { version = "0.21.1", features = ["cpal-shared-stdcxx"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml = "0.9.34"
+toml = "0.9.8"
