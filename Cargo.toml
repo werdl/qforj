@@ -6,8 +6,10 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 cpal = "0.16.0"
+env_logger = "0.11.8"
 humantime-serde = "1.1.1"
 kira = "0.11.0"
+log = "0.4.29"
 rodio = { version = "0.21.1", features = ["cpal-shared-stdcxx"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"

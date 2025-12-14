@@ -7,17 +7,29 @@ cues:
     play: 2
 - number: 2.0
   name: Second Cue
-  trim: -20.0
   continue_mode: DoNotContinue
   cue_type: !Audio
     path: b.mp3
     start_time: 1m 15s
     end_time: 1m 25s
     loops: true
+    trim: -20.0
 - number: 3.0
-  name: Stop Cue
+  name: Fade Cue
   continue_mode: DoNotContinue
-  cue_type: !Stop
+  cue_type: !Fade
     target_cue: 1.0
+    duration: 5s
+    target_db: -40.0
+    shape: Exponential
+    and_stop: false
+- number: 4.0
+  name: Fade back up 
+  cue_type: !Fade
+    target_cue: 1.0
+    duration: 3s
+    target_db: 0.0
+    shape: Linear
+    and_stop: false
 name: Main Stack
 continue_mode: DoNotContinue

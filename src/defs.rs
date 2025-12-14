@@ -1,13 +1,12 @@
-use rodio::{Decoder, Sink, Source, mixer::Mixer};
+use rodio::mixer::Mixer;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::BufReader;
 
-use crate::cue_types::{AudioCue, AudioSink, CueType};
+use crate::cue_types::{AudioSink, CueType};
 use crate::error::Error;
-use crate::util::is_zero_f32;
+
+use log::{debug, error, trace};
 
 /// continue mode determines when the next cue is triggered
 #[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
@@ -50,10 +49,6 @@ pub struct Cue {
         skip_serializing_if = "std::time::Duration::is_zero"
     )]
     pub post_wait: Duration,
-
-    /// volume level for this cue, in decibels
-    #[serde(default, skip_serializing_if = "is_zero_f32")]
-    pub trim: f32,
 
     /// continue mode for this cue
     #[serde(default)]
@@ -107,14 +102,16 @@ impl CueStack {
     }
 
     pub fn prime_cue(&mut self, cue_number: f32, mixer: &Mixer) -> Result<(), Error> {
+        trace!("priming cue {}", cue_number);
         // find the cue in the stack
         let cue_opt = self.get_cue_by_number_mut(cue_number);
         if let Some(cue) = cue_opt {
             match &mut cue.cue_type {
                 CueType::Audio(audio_cue) => {
-                    let primed = audio_cue.prime(mixer, cue_number, cue.trim);
+                    let primed = audio_cue.prime(mixer, cue_number, audio_cue.trim);
                     audio_cue.primed = true;
                     self.audio_sinks.push(primed);
+                    debug!("primed audio cue {}", cue_number);
                     Ok(())
                 }
                 _ => Ok(()),
@@ -125,11 +122,24 @@ impl CueStack {
     }
 
     pub fn prune_sinks(&mut self) {
-        self.audio_sinks
-            .retain(|s| !s.sink.empty() && (s.sink.len() > 0));
+        trace!("pruning sinks");
+        // remove any sinks that have finished playing, and mark their cues as unprimed
+        for i in (0..self.audio_sinks.len()).rev() {
+            if self.audio_sinks[i].sink.empty() {
+                // mark cue as unprimed
+                if let Some(cue) = self.get_cue_by_number_mut(self.audio_sinks[i].cue_number) {
+                    if let CueType::Audio(audio_cue) = &mut cue.cue_type {
+                        audio_cue.primed = false;
+                    }
+                    trace!("pruned sink for cue {}", self.audio_sinks[i].cue_number);
+                }
+                self.audio_sinks.remove(i);
+            }
+        }
     }
 
     pub fn trigger_cue(&mut self, cue_number: f32) -> Result<(), Error> {
+        debug!("triggering cue {}", cue_number);
         self.prune_sinks();
         // find the cue in the stack
         let cue_type = match self.get_cue_by_number(cue_number) {
@@ -139,23 +149,27 @@ impl CueStack {
 
         self.current_cue_number = cue_number;
 
-        match cue_type {
+        let res = match cue_type {
             CueType::Audio(_audio_cue) => {
                 let sink_opt = self.get_sink_by_cue_number(cue_number);
                 if let Some(sink) = sink_opt {
                     sink.play();
-                    println!("sink: {:?}", sink.sink.is_paused());
                     Ok(())
                 } else {
+                    error!("cue {} not primed", cue_number);
                     Err(Error::CueNotPrimed(cue_number))
                 }
             }
             CueType::Stop(stop_cue) => stop_cue.go(self),
-            _ => Err(Error::CueNotFound(cue_number)),
-        }
+            CueType::Fade(fade_cue) => fade_cue.go(self),
+        };
+        self.prune_sinks();
+        trace!("triggered cue {}", cue_number);
+        res
     }
 
     pub fn go(&mut self) -> Result<State, Error> {
+        trace!("going to next cue from {}", self.current_cue_number);
         // get next cue
         let prev_cue = self.get_cue_by_number(self.current_cue_number);
 
@@ -176,6 +190,8 @@ impl CueStack {
         }
 
         let new_cue = self.cues[next_cue_index].clone();
+
+        trace!("next cue is {}", new_cue.number);
 
         // trigger next cue first
         self.trigger_cue(new_cue.number)?;

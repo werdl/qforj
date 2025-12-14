@@ -1,10 +1,7 @@
-use defs::{Cue, CueStack};
-use rodio::Sink;
-use rodio::source::{SineWave, Source};
+#![allow(clippy::uninlined_format_args)]
+
 use rodio::stream::OutputStreamBuilder;
-use serialize::serialize_cue_stack;
-use std::f32::NEG_INFINITY;
-use std::time::Duration;
+
 
 mod cue_types;
 mod defs;
@@ -12,10 +9,26 @@ mod error;
 mod serialize;
 mod util;
 
-use cue_types::AudioCue;
+use env_logger::Builder;
+use std::env;
+use log::{info, debug, LevelFilter};
 use std::io::{self, Write};
 
 fn main() {
+    let mut builder = Builder::new();
+
+    // Default global level
+    builder.filter_level(LevelFilter::Info);
+
+    builder.filter_module("symphonia_core", LevelFilter::Warn);
+    builder.filter_module("symphonia_bundle_mp3", LevelFilter::Warn);
+
+    if let Ok(rust_log) = env::var("RUST_LOG") {
+        builder.parse_filters(&rust_log);
+    }
+
+    builder.init();
+
     // Create a builder for the default device
     let builder =
         OutputStreamBuilder::from_default_device().expect("No default audio device found");
@@ -26,16 +39,15 @@ fn main() {
     let mut stack = serialize::deserialize_cue_stack("cue_stack.yaml")
         .expect("Failed to deserialize cue stack");
 
-    println!("loading audio data...");
+    info!("loading audio data...");
 
-    for cue in &mut stack.cues {
-        if let cue_types::CueType::Audio(audio_cue) = &mut cue.cue_type {
-            stack
-                .audio_sinks
-                .push(audio_cue.prime(stream.mixer(), cue.number, cue.trim));
-            audio_cue.primed = true;
-            println!("primed cue {}", cue.number);
-        }
+    for cue in &stack.cues.clone() {
+        stack
+            .prime_cue(cue.number, stream.mixer())
+            .unwrap_or_else(|e| {
+                eprintln!("Error priming cue {}: {:?}", cue.number, e);
+            });
+        debug!("primed cue {}", cue.number);
     }
 
     loop {
@@ -58,22 +70,21 @@ fn main() {
             }
             _ => match trimmed.parse::<f32>() {
                 Ok(cue_number) => {
-                    match stack.get_cue_by_number(cue_number) {
-                        Some(c) => match &c.cue_type {
-                            cue_types::CueType::Audio(a) => {
-                                if !a.primed {
-                                    stack.prime_cue(cue_number, stream.mixer()).unwrap_or_else(
-                                        |e| eprintln!("Error priming cue: {:?}", e),
-                                    );
-                                }
+                    let c = stack.get_cue_by_number(cue_number);
+                    match c {
+                        Some(_) => {
+                            stack.prune_sinks();
+                            if let Err(e) = stack.prime_cue(cue_number, stream.mixer()) {
+                                eprintln!("Error priming cue {}: {:?}", cue_number, e);
+                                continue;
                             }
-                            _ => { /* do nothing for non-audio cues */ }
-                        },
+                        }
                         None => {
-                            eprintln!("Cue number {} not found.", cue_number);
+                            eprintln!("Cue {} not found in stack.", cue_number);
                             continue;
                         }
                     }
+
                     if let Err(e) = stack.trigger_cue(cue_number) {
                         eprintln!("Error: {:?}", e);
                     }

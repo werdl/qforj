@@ -1,4 +1,4 @@
-use crate::defs::{Cue, CueStack};
+use crate::defs::CueStack;
 use crate::error::Error;
 use crate::util::db_to_normalized;
 use crate::util::is_zero_u32;
@@ -7,12 +7,18 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
+use log::trace;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+/// different types of cues with type-specific parameters
 pub enum CueType {
+    /// play an audio file
     Audio(AudioCue),
+    /// stop playback of a cue
     Stop(StopCue),
+    /// fade volume of a cue
+    Fade(FadeCue)
 }
 
 fn default_play() -> u32 {
@@ -52,6 +58,10 @@ pub struct AudioCue {
     /// tracks whether the cue has been primed for playback
     #[serde(skip, default)]
     pub primed: bool,
+    
+    /// volume trim in decibels
+    #[serde(default)]
+    pub trim: f32,
 }
 
 pub struct AudioSink {
@@ -74,6 +84,7 @@ impl AudioCue {
         end_time: Option<Duration>,
         play: u32,
         loops: bool,
+        trim: f32,
     ) -> Self {
         AudioCue {
             path,
@@ -82,10 +93,12 @@ impl AudioCue {
             play,
             loops,
             primed: false,
+            trim,
         }
     }
 
     pub fn to_source(&self) -> impl Source<Item = f32> + Send + 'static {
+        trace!("loading audio file: {}", &self.path);
         let file = File::open(&self.path).expect("Failed to open audio file");
         let decoder = Decoder::new(BufReader::new(file)).expect("Failed to decode audio file");
 
@@ -103,6 +116,7 @@ impl AudioCue {
 
     /// Prime the audio cue for playback by creating a Sink and loading the audio data
     pub fn prime(&self, mixer: &Mixer, cue_number: f32, trim: f32) -> AudioSink {
+        trace!("priming audio cue {}: {}", cue_number, &self.path);
         let sink = Sink::connect_new(&mixer.clone());
 
         let source = self.to_source().amplify_decibel(trim);
@@ -140,7 +154,8 @@ impl AudioSink {
     }
 
     /// fade the volume to the target db over the specified duration
-    pub fn fade_to(&mut self, target_db: f32, duration: Duration) {
+    pub fn fade_to_linear(&mut self, target_db: f32, duration: Duration) {
+        trace!("fading to {} dB over {:?}", target_db, duration);
         let target_volume = db_to_normalized(target_db);
         let current_volume = self.sink.volume();
         let steps = 100;
@@ -149,6 +164,23 @@ impl AudioSink {
 
         for i in 0..steps {
             let new_volume = current_volume + volume_step * (i as f32 + 1.0);
+            self.sink.set_volume(new_volume);
+            std::thread::sleep(step_duration);
+        }
+    }
+
+    /// fade the volume to the target db over the specified duration exponentially (starts slow,
+    /// ends fast)
+    pub fn fade_to_exponential(&mut self, target_db: f32, duration: Duration) {
+        trace!("fading to {} dB over {:?}", target_db, duration);
+        let target_volume = db_to_normalized(target_db);
+        let current_volume = self.sink.volume();
+        let steps = 100;
+        let step_duration = duration / steps;
+
+        for i in 0..steps {
+            let t = (i as f32 + 1.0) / steps as f32;
+            let new_volume = current_volume * (target_volume / current_volume).powf(t);
             self.sink.set_volume(new_volume);
             std::thread::sleep(step_duration);
         }
@@ -163,10 +195,61 @@ pub struct StopCue {
 
 impl StopCue {
     pub fn go(&self, stack: &mut CueStack) -> Result<(), Error> {
+        trace!("stopping cue {}", self.target_cue);
         let sink = stack.get_sink_by_cue_number(self.target_cue);
         match sink {
             Some(sink) => {
                 sink.stop();
+                Ok(())
+            }
+            None => Err(Error::CueNotFound(self.target_cue)),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+pub enum FadeShape {
+    #[default]
+    Linear,
+    Exponential,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+/// fade cue parameters
+pub struct FadeCue {
+    /// target cue number to apply the fade to (ie. which audio cue)
+    pub target_cue: f32,
+    /// duration of the fade
+    #[serde(with = "humantime_serde")]
+    pub duration: Duration,
+    /// target volume in decibels
+    pub target_db: f32,
+    #[serde(default)]
+    /// shape of the fade
+    pub shape: FadeShape,
+    #[serde(default)]
+    /// whether to stop the cue after fading
+    pub and_stop: bool,
+}
+
+impl FadeCue {
+    pub fn go(&self, stack: &mut CueStack) -> Result<(), Error> {
+        trace!("fading cue {} to {} dB over {:?}", self.target_cue, self.target_db, self.duration);
+        let sink_opt = stack.get_sink_by_cue_number(self.target_cue);
+        match sink_opt {
+            Some(sink) => {
+                match self.shape {
+                    FadeShape::Linear => {
+                        sink.fade_to_linear(self.target_db, self.duration);
+                    }
+                    FadeShape::Exponential => {
+                        sink.fade_to_exponential(self.target_db, self.duration);
+                    }
+                }
+                if self.and_stop {
+                    sink.stop();
+                }
                 Ok(())
             }
             None => Err(Error::CueNotFound(self.target_cue)),
